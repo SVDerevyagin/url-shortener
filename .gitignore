@@ -29,3 +29,5 @@ cabal.project.local~
 
 result
 data/
+redis.conf
+*.rdb

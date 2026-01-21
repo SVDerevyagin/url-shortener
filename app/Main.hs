@@ -1,6 +1,10 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+-- | The server app
 module Main (main) where
 
-import Lib
+import ScottyApp
 
+-- | the `main` function
 main :: IO ()
-main = someFunc
+main = runApp
