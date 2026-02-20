@@ -16,7 +16,7 @@ A URL shortening service built with Haskell, PostgreSQL, and Redis, using Nix fo
 
 - **Language**: Haskell (GHC)
 - **Web Framework**: Scotty
-- **Database**: PostgreSQL
+- **Database**: PostgreSQL (postgresql-simple)
 - **Cache**: Redis
 - **Build System**: Nix + Cabal
 - **Testing**: HSpec + QuickCheck
