@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- | Encapsulates resolving a short URL
 
@@ -11,8 +12,10 @@ import Control.Monad.Except (throwError)
 import Control.Monad.State (gets, liftIO)
 import qualified Data.ByteString.Char8 as BS
 import Data.Time
+import qualified Data.Text as T
 
-import qualified Database.PostgreSQL.Simple as P
+import qualified Hasql.Session  as HS
+import qualified Hasql.TH       as TH
 import qualified Database.Redis as R
 
 import USh.Utils
@@ -44,7 +47,8 @@ openShortURL sURL = do
       Nothing   -> openShortURL' sURL
       Just link -> do
         pc <- gets asPostgresConnect
-        void $ liftIO $ P.execute pc "UPDATE urls SET click_count = click_count + 1 WHERE short_url = ?" (P.Only sURL)
+        let updateUrls = HS.statement (T.pack sURL) [TH.resultlessStatement| UPDATE urls SET click_count = click_count + 1 WHERE short_url = $1::text |]
+        void $ liftIO $ HS.run updateUrls pc
         return $ BS.unpack link
 
 -- | checks if the short URL is in Postgres
@@ -58,17 +62,18 @@ openShortURL' :: String            -- ^ short URL
               -> MainError String  -- ^ original URL
 openShortURL' sURL = do
   pc <- gets asPostgresConnect
-  result <- liftIO $ P.query pc "SELECT * FROM urls WHERE short_url = ?" (P.Only sURL)
+  let selectUrl = HS.statement (T.pack sURL) [TH.maybeStatement|SELECT expiration_date::timestamptz, original_url::text FROM urls WHERE short_url = $1::text|]
+  result <- liftIO $ HS.run selectUrl pc
   case result of
-    [r] -> do
+    Left err      -> throwError $ UShError UShUnreachable $ "openShortURL: " ++ show err
+    Right Nothing -> throwError $ UShError USh404 "openShortURL: the short URL is not in the database"
+    Right (Just (expDate, oURL)) -> do
       now <- liftIO getCurrentTime
-      let eDay = utctDay $ sExpirationDate r
+      let eDay = utctDay expDate
       if eDay < utctDay now then do
         removeShortURL sURL
         throwError $ UShError USh404 "openShortURL: the short URL is not in the database"
       else do
-        void $ liftIO $ P.execute pc "UPDATE urls SET click_count = click_count + 1 WHERE short_url = ?" (P.Only sURL)
-        return $ sOriginalURL r
-    [] -> throwError $ UShError USh404 "openShortURL: the short URL is not in the database"
-    _  -> throwError $ UShError UShUnreachable "openShortURL: the short URL is in the database more than once"
-
+        let updateUrl = HS.statement (T.pack sURL) [TH.resultlessStatement|UPDATE urls SET click_count = click_count + 1 WHERE short_url = $1::text|]
+        void $ liftIO $ HS.run updateUrl pc
+        return $ T.unpack oURL

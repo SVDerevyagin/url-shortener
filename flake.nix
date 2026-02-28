@@ -125,17 +125,31 @@
         };
         apps.test = {
           type = "app";
-          meta.description = "run to start redis server";
+          meta.description = "run tests";
           program =
             let
               script = pkgs.writeShellApplication {
                 name = "test";
                 runtimeInputs = [ pkgs.postgresql ];
                 text = ''
-                  hpack . && cabal test ; rm url-shortener.cabal
+                  hpack . && cabal test "$@" ; rm url-shortener.cabal
                 '';
               };
             in "${script}/bin/test";
+        };
+        apps.repl = {
+          type = "app";
+          meta.description = "run repl";
+          program =
+            let
+              script = pkgs.writeShellApplication {
+                name = "repl";
+                runtimeInputs = [ pkgs.postgresql ];
+                text = ''
+                  hpack . && cabal repl "$@" ; rm url-shortener.cabal
+                '';
+              };
+            in "${script}/bin/repl";
         };
 
 

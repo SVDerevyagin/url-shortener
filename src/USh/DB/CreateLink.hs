@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- | Encapsulates creating a short URL
 module USh.DB.CreateLink
@@ -10,11 +11,15 @@ import Control.Monad.Except (throwError)
 import Control.Monad.State (gets, liftIO)
 import qualified Data.ByteString.Char8 as BS
 import Data.List (isPrefixOf)
+import qualified Data.Text as T
 import Data.Time
-import qualified Database.PostgreSQL.Simple as P
+
+import qualified Hasql.Session  as HS
+import qualified Hasql.TH       as TH
 import qualified Database.Redis as R
 
 import USh.Utils
+import Data.ByteString (ByteString)
 
 -- | creates a short URL
 --
@@ -29,7 +34,7 @@ createShortURL :: String              -- ^ original url
 createShortURL oURL sURL eDate = do
   used <- case sURL of
     Nothing -> return False
-    Just l  -> checkURL l
+    Just l  -> checkURL $ T.pack l
   if used then throwError $ UShError UShShortLinkExists "provided custom short url is already in use"
     else do
       shortLink      <- maybe getShortLink return sURL
@@ -47,12 +52,18 @@ createShortURL' :: String         -- ^ original url
                 -> MainError URL
 createShortURL' oURL sURL eDate = do
   pc <- gets asPostgresConnect
-  shL' <- liftIO $ P.query pc "INSERT INTO urls(short_url, original_url, expiration_date) VALUES (?, ?, ?) RETURNING *"
-                        (sURL, oURL, eDate)
-  shL@(URL rkey' _ _ expDate _) <- case shL' :: [URL] of
-    [sl] -> return sl
-    _    -> throwError $ UShError UShPostgresError "createShortURL: INSERT INTO returned something wrong"
-  let rkey = BS.pack $ "short:" ++ rkey'
+  let insertUrl = HS.statement (T.pack sURL, T.pack oURL, eDate)
+                    [TH.maybeStatement|INSERT INTO urls (short_url, original_url, expiration_date)
+                                      VALUES ($1::text, $2::text, $3::timestamptz)
+                                      RETURNING short_url::text, creation_date::timestamptz, expiration_date::timestamptz, click_count::int4 |]
+  shL' <- liftIO $ HS.run insertUrl pc
+--  shL' <- liftIO $ P.query pc "INSERT INTO urls(short_url, original_url, expiration_date) VALUES (?, ?, ?) RETURNING *"
+--                        (sURL, oURL, eDate)
+  (rkey', crDate, expDate, clicks) <- case shL' of
+    Right (Just sl) -> return sl
+    Right Nothing   -> throwError $ UShError UShPostgresError   "createShortURL: INSERT INTO returned Nothing"
+    Left err        -> throwError $ UShError UShPostgresError $ "createShortURL: INSERT INTO returned " ++ show err
+  let rkey = BS.pack $ T.unpack $ "short:" <> rkey'
 
   rc <- gets asRedisConnect
   status <- liftIO $ R.runRedis rc $ R.hmset rkey [ ("original_url",    BS.pack oURL)
@@ -61,16 +72,18 @@ createShortURL' oURL sURL eDate = do
   case status of
     Left err     -> throwError $ UShError UShRedisError $ show err
     Right result -> case result of
-      R.Ok         -> setExpTime shL
+      R.Ok         -> do
+        setExpTime rkey
+        return $ URL (T.unpack rkey') oURL crDate expDate (fromIntegral clicks)
       R.Pong       -> throwError $ UShError UShRedisError "createShortURL: hmset returned Pong"
       R.Status err -> throwError $ UShError UShRedisError $ BS.unpack err
 
 -- | sets expiration time for the link in Redis
-setExpTime :: URL -> MainError URL
-setExpTime res@(URL l _ _ _ _) = do
+setExpTime :: ByteString -> MainError ()
+setExpTime l = do
   rc <- gets asRedisConnect
-  void $ liftIO $ R.runRedis rc $ R.expire (BS.pack l) $ 7*24*60*60
-  return res
+  void $ liftIO $ R.runRedis rc $ R.expire l $ 7*24*60*60
+  --return res
 
 -- | gets an unused short link
 --

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- | Testing 'USh.DB' module
 module Tests.DB
@@ -10,9 +11,11 @@ module Tests.DB
 import Control.Monad (replicateM_, void)
 import Control.Monad.State (evalStateT, gets, liftIO)
 import Control.Monad.Except (runExceptT)
-
 import Data.Time
-import qualified Database.PostgreSQL.Simple as P
+import qualified Data.Text as T
+
+import qualified Hasql.Session  as HS
+import qualified Hasql.TH       as TH
 import Test.Hspec
 import Test.QuickCheck
 
@@ -78,7 +81,10 @@ testCreateShortURL = do
         now <- getCurrentTime
         result <- runMain' as $ do
           pc <- gets asPostgresConnect
-          void $ liftIO $ P.execute pc "INSERT INTO urls(short_url, original_url, expiration_date) VALUES (?, ?, ?)" (link, "example.com"::String, now)
+          let insertUrl = HS.statement (T.pack link, "example.com", now)
+                            [TH.resultlessStatement|INSERT INTO urls (short_url, original_url, expiration_date)
+                                                   VALUES ($1::text, $2::text, $3::timestamptz)|]
+          void $ liftIO $ HS.run insertUrl pc
           createShortURL "example.com" (Just link) Nothing
         void $ runMain' as $ removeShortURL link
         case result of
@@ -114,14 +120,20 @@ testOpenShortURL = do
       Right sl <- runMain' as $ createShortURL oURL Nothing (Just $ addYears (-1) now)
       l <- runMain' as $ openShortURL (sShortURL sl)
       Right pc <- runMain' as $ gets asPostgresConnect
-      u  <- P.query pc "SELECT * FROM urls WHERE short_url = ?" (P.Only $ sShortURL sl)
-      k  <- P.query pc "SELECT used FROM keys WHERE key = ?" (P.Only $ sShortURL sl)
+      let selectUrls = HS.statement (T.pack $ sShortURL sl) [TH.maybeStatement|SELECT short_url::text FROM urls WHERE short_url = $1::text|]
+          selectKeys = HS.statement (T.pack $ sShortURL sl) [TH.maybeStatement|SELECT used     ::bool FROM keys WHERE       key = $1::text|]
+      u <- HS.run selectUrls pc
+      k <- HS.run selectKeys pc
+      --u  <- P.query pc "SELECT * FROM urls WHERE short_url = ?" (P.Only $ sShortURL sl)
+      --k  <- P.query pc "SELECT used FROM keys WHERE key = ?" (P.Only $ sShortURL sl)
       void $ runMain' as $ removeShortURL (sShortURL sl)
       case l of
         Right ou -> expectationFailure $ "unexpected success: " ++ show ou
         Left (UShError USh404 _) -> do
-          length (u::[URL]) `shouldBe` 0
-          k `shouldBe` [P.Only False]
+          u `shouldBe` Right Nothing
+          k `shouldBe` Right (Just False)
+          --length (u::[URL]) `shouldBe` 0
+          --k `shouldBe` [P.Only False]
         Left err -> expectationFailure $ "unexpected error: " ++ show err
   where
     oURL = "example.com"

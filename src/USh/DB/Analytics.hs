@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- | Encapsulates getting the usage analytics
 
@@ -8,7 +9,11 @@ module USh.DB.Analytics
 
 import Control.Monad.Except (throwError)
 import Control.Monad.State (gets, liftIO)
-import qualified Database.PostgreSQL.Simple as P
+import qualified Data.Text as T
+
+import qualified Hasql.Session as HS
+import qualified Hasql.TH      as TH
+
 
 import USh.Utils
 
@@ -17,8 +22,9 @@ getAnalytics :: String          -- ^ short URL
              -> MainError Int   -- ^ amount of clicks
 getAnalytics sURL = do
   pc <- gets asPostgresConnect
-  lnk <- liftIO $ P.query pc "SELECT * FROM urls WHERE short_url = ?" (P.Only sURL)
+  let selectUrl = HS.statement (T.pack sURL) [TH.maybeStatement|SELECT click_count::int4 FROM urls WHERE short_url = $1::text|]
+  lnk <- liftIO $ HS.run selectUrl pc
   case lnk of
-    [r] -> return $ sClickCount r
-    [] -> throwError $ UShError USh404 "getAnalytics: the short URL is not in the database"
-    _  -> throwError $ UShError UShUnreachable "getAnalytics: the short URL is in the database more than once"
+    Right (Just r)  -> return $ fromIntegral r
+    Right (Nothing) -> throwError $ UShError USh404 "getAnalytics: the short URL is not in the database"
+    Left err        -> throwError $ UShError UShUnreachable $ "getAnalytics: " ++ show err

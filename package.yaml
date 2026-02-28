@@ -21,11 +21,14 @@ description:         Please see the README on GitHub at <https://github.com/SVDe
 
 dependencies:
 - base >= 4.7 && < 5
-- postgresql-simple
+- hasql < 1.10
+- hasql-th <0.5
 - hedis
 - mtl
 - time
 - bytestring
+- vector
+- text
 
 ghc-options:
 - -Wall

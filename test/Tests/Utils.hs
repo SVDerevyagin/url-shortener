@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 -- | Testing 'USh.Utils' module
 module Tests.Utils
@@ -8,9 +9,12 @@ module Tests.Utils
 import Control.Monad (void)
 import Control.Monad.State (evalStateT, gets, liftIO)
 import Control.Monad.Except (runExceptT)
-
 import Data.Time
-import qualified Database.PostgreSQL.Simple as P
+import qualified Data.Text as T
+
+import qualified Hasql.Session  as HS
+import qualified Hasql.TH       as TH
+
 import Test.Hspec
 import Test.QuickCheck
 
@@ -40,15 +44,18 @@ testCheckURL = do
         now <- getCurrentTime
         r <- runMain' as $ do
           pc <- gets asPostgresConnect
-          void $ liftIO
-            $ P.execute pc "INSERT INTO urls(short_url, original_url, expiration_date) VALUES (?, ?, ?)"
-                            (link, "https://example.com"::String, now)
-          res <- checkURL link
-          void $ liftIO $ P.execute pc "DELETE FROM urls WHERE short_url = ?" (P.Only link)
+          let insertUrl = HS.statement (T.pack link, "https://example.com", now)
+                            [TH.resultlessStatement|INSERT INTO urls (short_url, original_url, expiration_date)
+                                                   VALUES ($1::text, $2::text, $3::timestamptz)|]
+              deleteUrl = HS.statement (T.pack link)
+                            [TH.resultlessStatement|DELETE FROM urls WHERE short_url = $1::text|]
+          void $ liftIO $ HS.run insertUrl pc
+          res <- checkURL $ T.pack link
+          void $ liftIO $ HS.run deleteUrl pc
           return res
         r `shouldBe` Right True
 
     it "link is not in the database" $ \as -> do
       forAll genLink $ \link -> do
-        r <- runMain' as $ checkURL link
+        r <- runMain' as $ checkURL $ T.pack link
         r `shouldBe` Right False

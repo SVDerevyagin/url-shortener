@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 -- | Some utilities
 
@@ -14,23 +16,31 @@ module USh.Utils
   , addYears, dayToUtc
   ) where
 
-import qualified Database.PostgreSQL.Simple as P
+import qualified Hasql.Connection                    as H
+import qualified Hasql.Connection.Setting            as H
+import qualified Hasql.Connection.Setting.Connection as HSt
+import qualified Hasql.Session   as HS
+import qualified Hasql.TH        as TH
 import qualified Database.Redis as R
+
+import qualified Data.Text as T
+import           Data.Text (Text)
+import qualified Data.Vector as V
 import Control.Monad.State (StateT, evalStateT, gets)
-import Control.Monad.Except (ExceptT, runExceptT)
+import Control.Monad.Except (ExceptT, runExceptT, MonadError (throwError))
 import Control.Monad.IO.Class (liftIO)
 import Data.ByteString (ByteString)
-import Data.String (fromString)
+import Data.Maybe (isNothing, isJust)
 import Data.Time (UTCTime(..), Day, addGregorianYearsRollOver)
 import System.Environment (getEnv)
 import Control.Concurrent (forkIO)
 import Control.Monad (when, void)
-import Control.Exception (bracket)
+import Control.Exception (bracket, throwIO, Exception)
 import GHC.Generics (Generic)
 
 -- | Application state keeps connections to the Postgres and Redis databases
 data AppState = AppState
-  { asPostgresConnect :: !P.Connection
+  { asPostgresConnect :: !H.Connection
   , asRedisConnect :: !R.Connection
   }
 
@@ -46,7 +56,19 @@ data UShErrorType = UShRedisError        -- ^ An error on Redis side
 data UShError = UShError
   { ueType :: !UShErrorType   -- ^ type of error
   , ueMsg  :: !String         -- ^ message
-  } deriving (Show, Eq)
+  } deriving (Show, Eq, Exception)
+
+--instance MonadError UShError IO where
+--instance MonadError UShError MainError where
+
+-- | throw 'UShPostgresError'
+thrPE :: (Show a, MonadError UShError m) => a -> m b
+thrPE = throwError . UShError UShPostgresError . show
+
+-- | throwIO 'UShPostgresError'
+thrPEio :: (Show a) => a -> IO b
+thrPEio = throwIO . UShError UShPostgresError . show
+
 
 -- | Main state monad of the application: connections to the databases
 type MainState = StateT AppState IO
@@ -70,7 +92,7 @@ data URL = URL
   , sCreationDate   :: !UTCTime
   , sExpirationDate :: !UTCTime
   , sClickCount     :: !Int
-  } deriving (Show, Generic, P.FromRow)
+  } deriving (Show, Eq, Generic)
 
 -- | Connects to the databases
 connect :: Bool          -- ^ True: main mode, False: test mode
@@ -82,10 +104,13 @@ connect isMain = do
   rp    <- getEnv "R_PORT"
 
   -- connection to Postgres
-  let pci = P.defaultConnectInfo { P.connectUser = pUser
-                                 , P.connectDatabase = pUser
-                                 }
-  p <- P.connect pci
+  let pcString = "host=localhost port=5432 user=" <> T.pack pUser <> " dbname=" <> T.pack pUser
+      pci = [H.connection $ HSt.string pcString]
+
+  ep <- H.acquire pci
+  p <- case ep of
+    Left err -> thrPEio err
+    Right c  -> return c
   -- populates =keys= table
   populateKeys p isMain
 
@@ -102,53 +127,71 @@ connect isMain = do
 -- | closes connections to the databases
 closeApp :: AppState -> IO ()
 closeApp (AppState p r) = do
-  P.close p
+  H.release p
   R.disconnect r
 
 -- | all possible 3-character alphanumerical strings
-allKeys :: [String]
-allKeys = [ [a,b,c] | a<-letters, b<-letters, c<-letters ]
+allKeys :: [Text]
+allKeys = map T.pack [ [a,b,c] | a<-letters, b<-letters, c<-letters ]
   where
     letters = ['A'..'Z'] ++ ['a'..'z'] ++ ['0'..'9']
 
 -- | populates =keys= table with possible short URLs
-populateKeys :: P.Connection -> Bool -> IO ()
+populateKeys :: H.Connection -> Bool -> IO ()
 populateKeys conn isMain = if isMain then populateMainKeys conn else populateTestKeys conn allKeys
 
 -- | all keys in the main database should be
 -- `mainKeys = concatMap (\s -> map (++s) allKeys) allKeys`
 -- but this list is too big
 -- it forks the main loop of inserting the keys into the =keys= table
-populateMainKeys :: P.Connection -> IO ()
+populateMainKeys :: H.Connection -> IO ()
 populateMainKeys conn = do
-  void $ P.execute_ conn "CREATE TABLE IF NOT EXISTS created_keys(key TEXT PRIMARY KEY)"
-  void $ forkIO $ mapM_ (populatePartialMainKeys conn) $ zip allKeys $ map (\s -> map (++s) allKeys) allKeys
+  void $ HS.run session conn
+  void $ forkIO $ mapM_ (populatePartialMainKeys conn) $ zip allKeys $ map (\s -> map (<>s) allKeys) allKeys
+  where
+    session = HS.sql [TH.uncheckedSqlFile|data/migration.sql|]
 
 -- | inserts some of the keys into the =keys= table and records their suffix
-populatePartialMainKeys :: P.Connection
-                        -> (String, [String])  -- ^ (a suffix, list of keys with the suffix)
+populatePartialMainKeys :: H.Connection
+                        -> (Text, [Text])  -- ^ (a suffix, list of keys with the suffix)
                         -> IO ()
 populatePartialMainKeys conn (key,keys) = do
-  res <- P.query conn "SELECT key FROM created_keys WHERE key = ?" (P.Only key)
-  when (null (res :: [P.Only String])) $ do
-    P.begin conn
-    void $ P.execute conn "INSERT INTO created_keys(key) VALUES (?)" (P.Only key)
-    populateSomeKeys conn keys
-    P.commit conn
-    return ()
+  res <- HS.run checkTheKey conn
+  case res of
+    Left err -> thrPEio err
+    Right r  -> when (isNothing r) $ void $ HS.run insertKeys conn
+--  when (isNothing res) $ do
+--    P.begin conn
+--    void $ P.execute conn "INSERT INTO created_keys(key) VALUES (?)" (P.Only key)
+--    populateSomeKeys conn keys
+--    P.commit conn
+--    return ()
+  where
+    checkTheKey = HS.statement key [TH.maybeStatement| SELECT key :: text? FROM created_keys WHERE key = ($1::text) |]
+    insertKeys = do
+      HS.sql [TH.uncheckedSql| BEGIN |]
+      HS.statement key [TH.resultlessStatement| INSERT INTO created_keys (key) VALUES ($1::text) |]
+      liftIO $ populateSomeKeys conn keys
+      HS.sql [TH.uncheckedSql| COMMIT |]
 
 -- | checks if the =keys= table is empty,
 --   inserts the possible short URL into the empty =keys= table
-populateTestKeys :: P.Connection -> [String] -> IO ()
+populateTestKeys :: H.Connection -> [Text] -> IO ()
 populateTestKeys conn keys = do
-  ks <- P.query_ conn "SELECT key FROM keys"
-  when (null (ks :: [P.Only String])) $ populateSomeKeys conn keys
+  ks <- HS.run checkTheKeys conn
+  case ks of
+    Left err -> thrPEio err
+    Right k  -> when (V.null k) $ populateSomeKeys conn keys
+  where
+    checkTheKeys = HS.statement () [TH.vectorStatement| SELECT key :: text FROM keys |]
 
 -- | inserts the possible short URL into the =keys= table
-populateSomeKeys :: P.Connection -> [String] -> IO ()
+populateSomeKeys :: H.Connection -> [Text] -> IO ()
 populateSomeKeys conn keys = do
-  _ <- P.executeMany conn "INSERT INTO keys(key) VALUES (?)" $ map P.Only keys
-  return ()
+  void $ HS.run insertKeys conn
+  --return ()
+  where
+    insertKeys = HS.statement (V.fromList keys) [TH.resultlessStatement| INSERT INTO keys (key) VALUES ($1::text[]) |]
 
 -- | key for using in the Redis database
 cashedKeys :: ByteString
@@ -163,12 +206,16 @@ redisLoadKeys = do
   liftIO $ R.runRedis rc $ do
     n <- R.scard cashedKeys
     when (n == Right 0) $ do
-      keys' <- liftIO $ P.query_ pc $ fromString
-          ( "WITH selected_keys AS (SELECT key FROM keys WHERE NOT used ORDER BY random_val LIMIT 1000) "
-         ++ "UPDATE keys SET used = true, random_val = random() FROM selected_keys WHERE keys.key = selected_keys.key RETURNING keys.key"
-          )
-      let keys = map P.fromOnly keys'
-      void $ R.sadd cashedKeys keys
+      let getKeys = HS.statement () [TH.singletonStatement|
+                        WITH selected_keys AS (SELECT key FROM keys WHERE NOT used ORDER BY random_val LIMIT 1000)
+                        UPDATE keys SET used = true, random_val = random() FROM selected_keys WHERE keys.key = selected_keys.key
+                        RETURNING keys.key :: bytea[]
+                      |]
+      keys <- liftIO $ HS.run getKeys pc
+      void $ case keys of
+        Left err -> liftIO $ throwIO $ UShError UShPostgresError $ show err -- thrPE err
+        Right ks -> R.sadd cashedKeys $ V.toList ks
+      --void $ R.sadd cashedKeys keys
   return ()
 
 
@@ -176,12 +223,16 @@ redisLoadKeys = do
 --
 --   True  = the link is present,
 --   False = the link is absent
-checkURL :: String
+checkURL :: Text
          -> MainError Bool
 checkURL link = do
   conn <- gets asPostgresConnect
-  used <- liftIO $ P.query conn "SELECT short_url FROM urls WHERE short_url = ?" (P.Only link)
-  return $ not $ null (used :: [P.Only String])
+  let getShortUrl = HS.statement link [TH.maybeStatement| SELECT short_url::text FROM urls WHERE short_url = $1::text|]
+  used <- liftIO $ HS.run getShortUrl conn
+  case used of
+    Left err -> thrPE err
+    Right u  -> return $ isJust u
+  --return $ isJust used
 
 
 -- | adds integer number of years to a given date-time

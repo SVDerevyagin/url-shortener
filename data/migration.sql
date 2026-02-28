@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS created_keys (key TEXT PRIMARY KEY)
