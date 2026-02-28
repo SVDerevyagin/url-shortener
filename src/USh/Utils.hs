@@ -132,7 +132,7 @@ closeApp (AppState p r) = do
 
 -- | all possible 3-character alphanumerical strings
 allKeys :: [Text]
-allKeys = map T.pack [ [a,b,c] | a<-letters, b<-letters, c<-letters ]
+allKeys = [ T.pack [a,b,c] | a<-letters, b<-letters, c<-letters ]
   where
     letters = ['A'..'Z'] ++ ['a'..'z'] ++ ['0'..'9']
 
@@ -160,12 +160,6 @@ populatePartialMainKeys conn (key,keys) = do
   case res of
     Left err -> thrPEio err
     Right r  -> when (isNothing r) $ void $ HS.run insertKeys conn
---  when (isNothing res) $ do
---    P.begin conn
---    void $ P.execute conn "INSERT INTO created_keys(key) VALUES (?)" (P.Only key)
---    populateSomeKeys conn keys
---    P.commit conn
---    return ()
   where
     checkTheKey = HS.statement key [TH.maybeStatement| SELECT key :: text? FROM created_keys WHERE key = ($1::text) |]
     insertKeys = do
@@ -191,7 +185,7 @@ populateSomeKeys conn keys = do
   void $ HS.run insertKeys conn
   --return ()
   where
-    insertKeys = HS.statement (V.fromList keys) [TH.resultlessStatement| INSERT INTO keys (key) VALUES ($1::text[]) |]
+    insertKeys = HS.statement (V.fromList keys) [TH.resultlessStatement| INSERT INTO keys (key) SELECT * FROM unnest ($1::text[]) |]
 
 -- | key for using in the Redis database
 cashedKeys :: ByteString
