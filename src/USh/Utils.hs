@@ -87,8 +87,8 @@ runMain isMain me = do
 
 -- | A record from =urls= table
 data URL = URL
-  { sShortURL       :: !String
-  , sOriginalURL    :: !String
+  { sShortURL       :: !Text
+  , sOriginalURL    :: !Text
   , sCreationDate   :: !UTCTime
   , sExpirationDate :: !UTCTime
   , sClickCount     :: !Int

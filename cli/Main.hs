@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- | Command Line Interface
 -- sends a command to the database
 --
@@ -10,6 +12,8 @@ module Main (main) where
 
 import Control.Monad (void)
 import Control.Monad.State (liftIO)
+import qualified Data.Text    as T
+import qualified Data.Text.IO as T
 
 import CliOpts
 import USh.DB
@@ -25,11 +29,11 @@ main = do
 main' :: Options -> MainError ()
 main' (Shorten oURL sURL eDate) = do
   sl <- createShortURL oURL sURL (dayToUtc <$> eDate)
-  liftIO $ putStrLn $ "Your short link is «" ++ sShortURL sl ++ "»"
+  liftIO $ T.putStrLn $ "Your short link is «" <> sShortURL sl <> "»"
 
 main' (Open sURL) = do
   ol <- openShortURL sURL
-  liftIO $ putStrLn $ "Your original link is «" ++ ol ++ "»"
+  liftIO $ T.putStrLn $ "Your original link is «" <> ol <> "»"
 
 main' (Analytics sURL) = do
   n <- getAnalytics sURL

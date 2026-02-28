@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-partial-fields #-}
 
 -- | Parses command line options
@@ -9,16 +10,18 @@ module CliOpts
 
 import Options.Applicative
 import Data.Time
+import qualified Data.Text as T
+import           Data.Text (Text)
 
 -- | the datatype representing all available cli options
 data Options
-  = Shorten   { ocOriginalURL    :: String
-              , ocShortURL       :: Maybe String
+  = Shorten   { ocOriginalURL    :: Text
+              , ocShortURL       :: Maybe Text
               , ocExpirationDate :: Maybe Day
               } -- ^ shorten command: creates a new short link in the database
-  | Open      { ooShortURL :: String
+  | Open      { ooShortURL :: Text
               } -- ^ open command: returns the original link
-  | Analytics { oaShortURL :: String
+  | Analytics { oaShortURL :: Text
               } -- ^ analytics command: returns the amount of clicks
   deriving (Show)
 
@@ -65,14 +68,14 @@ analyticsOptionsParser
   <$> shortLinkParser "analyze"
 
 -- | parser for the =original URL= option (=shorten= command)
-originalURLParser :: Parser String
+originalURLParser :: Parser Text
 originalURLParser
    = strOption
    $ metavar "<ORIGINAL URL>"
   <> help "the URL you want to shorten"
 
 -- | parser for the optional =short URL= option (=shorten= command)
-shortURLParser :: Parser (Maybe String)
+shortURLParser :: Parser (Maybe Text)
 shortURLParser
    = optional $ strOption
    $ long "short-url"
@@ -90,8 +93,8 @@ expDateParser
   <> help "(optional) the date when the short link should expire"
 
 -- | parser for the =short URL= option (=open= and =analytics= commands)
-shortLinkParser :: String -> Parser String
+shortLinkParser :: Text -> Parser Text
 shortLinkParser verb
    = strArgument
    $ metavar "<SHORT URL>"
-  <> help ("the URL you want to " ++ verb)
+  <> help ("the URL you want to " ++ T.unpack verb)

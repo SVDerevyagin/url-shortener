@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
 
 -- | The server app
 module Main (main) where

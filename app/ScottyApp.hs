@@ -27,7 +27,7 @@ app' = do
     eDate <- traverse (parseTimeM True defaultTimeLocale "%Y-%m-%d") edate
     shortLink <- S.liftIO $ runMain True $ createShortURL url alias (dayToUtc <$> eDate)
     case shortLink of
-      Right sl -> S.json $ object [ "short_link" .= String (T.pack $ sShortURL sl)
+      Right sl -> S.json $ object [ "short_link" .= String (sShortURL sl)
                                   , "creation_date" .= String (T.pack $ showGregorian $ utctDay $ sCreationDate sl)
                                   , "expiration_date" .= String (T.pack $ showGregorian $ utctDay $ sExpirationDate sl)
                                   ]
@@ -48,7 +48,7 @@ app' = do
   S.get "/:short" $ do
     sh <- S.captureParam "short"
     Right url <- S.liftIO $ runMain True $ openShortURL sh
-    S.redirect (TL.pack url)
+    S.redirect (TL.pack $ T.unpack url)
 
 -- | can be used for testing
 app :: IO Application

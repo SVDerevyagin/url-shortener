@@ -10,8 +10,8 @@ import Control.Monad (void)
 import Control.Monad.Except (throwError)
 import Control.Monad.State (gets, liftIO)
 import qualified Data.ByteString.Char8 as BS
-import Data.List (isPrefixOf)
 import qualified Data.Text as T
+import           Data.Text (Text)
 import Data.Time
 
 import qualified Hasql.Session  as HS
@@ -27,32 +27,32 @@ import Data.ByteString (ByteString)
 -- otherwise gets a short url from Redis
 -- 2. sets expiration date
 -- 3. makes request to the database
-createShortURL :: String              -- ^ original url
-               -> Maybe String        -- ^ custom short url
+createShortURL :: Text                -- ^ original url
+               -> Maybe Text          -- ^ custom short url
                -> Maybe UTCTime       -- ^ custom expiration date
                -> MainError URL
 createShortURL oURL sURL eDate = do
   used <- case sURL of
     Nothing -> return False
-    Just l  -> checkURL $ T.pack l
+    Just l  -> checkURL l
   if used then throwError $ UShError UShShortLinkExists "provided custom short url is already in use"
     else do
       shortLink      <- maybe getShortLink return sURL
       expirationDate <- maybe getExpDate   return eDate
-      let originalLink = (if "http" `isPrefixOf` oURL then "" else "https://") ++ oURL
+      let originalLink = (if "http" `T.isPrefixOf` oURL then "" else "https://") <> oURL
       createShortURL' originalLink shortLink expirationDate
 
 -- | makes request to the database
 --
 -- 1. inserts into Postgres a new link
 -- 2. inserts into Redis cached link
-createShortURL' :: String         -- ^ original url
-                -> String         -- ^ custom short url
+createShortURL' :: Text           -- ^ original url
+                -> Text           -- ^ custom short url
                 -> UTCTime        -- ^ custom expiration date
                 -> MainError URL
 createShortURL' oURL sURL eDate = do
   pc <- gets asPostgresConnect
-  let insertUrl = HS.statement (T.pack sURL, T.pack oURL, eDate)
+  let insertUrl = HS.statement (sURL, oURL, eDate)
                     [TH.maybeStatement|INSERT INTO urls (short_url, original_url, expiration_date)
                                       VALUES ($1::text, $2::text, $3::timestamptz)
                                       RETURNING short_url::text, creation_date::timestamptz, expiration_date::timestamptz, click_count::int4 |]
@@ -66,7 +66,7 @@ createShortURL' oURL sURL eDate = do
   let rkey = BS.pack $ T.unpack $ "short:" <> rkey'
 
   rc <- gets asRedisConnect
-  status <- liftIO $ R.runRedis rc $ R.hmset rkey [ ("original_url",    BS.pack oURL)
+  status <- liftIO $ R.runRedis rc $ R.hmset rkey [ ("original_url",    BS.pack $ T.unpack oURL)
                                                   , ("expiration_date", BS.pack $ show expDate)
                                                   ]
   case status of
@@ -74,7 +74,7 @@ createShortURL' oURL sURL eDate = do
     Right result -> case result of
       R.Ok         -> do
         setExpTime rkey
-        return $ URL (T.unpack rkey') oURL crDate expDate (fromIntegral clicks)
+        return $ URL rkey' oURL crDate expDate (fromIntegral clicks)
       R.Pong       -> throwError $ UShError UShRedisError "createShortURL: hmset returned Pong"
       R.Status err -> throwError $ UShError UShRedisError $ BS.unpack err
 
@@ -89,7 +89,7 @@ setExpTime l = do
 --
 -- 1. repopulates the Redis cache of short URLs if needed
 -- 2. takes a short URL from the Redis cache
-getShortLink :: MainError String
+getShortLink :: MainError Text
 getShortLink = do
   rc <- gets asRedisConnect
   redisLoadKeys
@@ -98,7 +98,7 @@ getShortLink = do
     Left err     -> throwError $ UShError UShRedisError $ show err
     Right result -> case result of
       Nothing -> throwError $ UShError UShRedisError "getShortLink: spop cashedKeys returned Nothing"
-      Just k  -> return $ BS.unpack k
+      Just k  -> return $ T.pack $ BS.unpack k
 
 -- | default expiration date is one year from now
 getExpDate :: MainError UTCTime

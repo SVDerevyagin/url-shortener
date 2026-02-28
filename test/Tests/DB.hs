@@ -13,6 +13,7 @@ import Control.Monad.State (evalStateT, gets, liftIO)
 import Control.Monad.Except (runExceptT)
 import Data.Time
 import qualified Data.Text as T
+import           Data.Text (Text)
 
 import qualified Hasql.Session  as HS
 import qualified Hasql.TH       as TH
@@ -31,10 +32,10 @@ genDate = do
   return $ dayToUtc day
 
 -- | generates a random short URL length 10 to 15
-genLink :: Gen String
+genLink :: Gen Text
 genLink = do
   n <- arbitrary `suchThat` (\x -> x > 10 && x <= 15)
-  vectorOf n genChar
+  vectorOf n genChar >>= return . T.pack
 
 -- | generates a random alphanumeric character
 genChar :: Gen Char
@@ -81,7 +82,7 @@ testCreateShortURL = do
         now <- getCurrentTime
         result <- runMain' as $ do
           pc <- gets asPostgresConnect
-          let insertUrl = HS.statement (T.pack link, "example.com", now)
+          let insertUrl = HS.statement (link, "example.com", now)
                             [TH.resultlessStatement|INSERT INTO urls (short_url, original_url, expiration_date)
                                                    VALUES ($1::text, $2::text, $3::timestamptz)|]
           void $ liftIO $ HS.run insertUrl pc
@@ -111,7 +112,7 @@ testOpenShortURL = do
       forAll genLink $ \link -> do
         ourl <- runMain' as $ openShortURL link
         case ourl of
-          Right l  -> expectationFailure $ "unexpected success: " ++ l
+          Right l  -> expectationFailure $ "unexpected success: " ++ T.unpack l
           Left (UShError USh404 _) -> return ()
           Left err -> expectationFailure $ "unexpected error: " ++ show err
 
@@ -120,8 +121,8 @@ testOpenShortURL = do
       Right sl <- runMain' as $ createShortURL oURL Nothing (Just $ addYears (-1) now)
       l <- runMain' as $ openShortURL (sShortURL sl)
       Right pc <- runMain' as $ gets asPostgresConnect
-      let selectUrls = HS.statement (T.pack $ sShortURL sl) [TH.maybeStatement|SELECT short_url::text FROM urls WHERE short_url = $1::text|]
-          selectKeys = HS.statement (T.pack $ sShortURL sl) [TH.maybeStatement|SELECT used     ::bool FROM keys WHERE       key = $1::text|]
+      let selectUrls = HS.statement (sShortURL sl) [TH.maybeStatement|SELECT short_url::text FROM urls WHERE short_url = $1::text|]
+          selectKeys = HS.statement (sShortURL sl) [TH.maybeStatement|SELECT used     ::bool FROM keys WHERE       key = $1::text|]
       u <- HS.run selectUrls pc
       k <- HS.run selectKeys pc
       --u  <- P.query pc "SELECT * FROM urls WHERE short_url = ?" (P.Only $ sShortURL sl)

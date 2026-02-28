@@ -11,6 +11,7 @@ import Control.Monad.State (evalStateT, gets, liftIO)
 import Control.Monad.Except (runExceptT)
 import Data.Time
 import qualified Data.Text as T
+import           Data.Text (Text)
 
 import qualified Hasql.Session  as HS
 import qualified Hasql.TH       as TH
@@ -22,10 +23,10 @@ import USh.Utils
 
 
 -- | generates a random short URL length 10 to 15
-genLink :: Gen String
+genLink :: Gen Text
 genLink = do
   n <- arbitrary `suchThat` (\x -> x > 10 && x <= 15)
-  vectorOf n genChar
+  vectorOf n genChar >>= return . T.pack
 
 -- | generates a random alphanumeric character
 genChar :: Gen Char
@@ -44,18 +45,18 @@ testCheckURL = do
         now <- getCurrentTime
         r <- runMain' as $ do
           pc <- gets asPostgresConnect
-          let insertUrl = HS.statement (T.pack link, "https://example.com", now)
+          let insertUrl = HS.statement (link, "https://example.com", now)
                             [TH.resultlessStatement|INSERT INTO urls (short_url, original_url, expiration_date)
                                                    VALUES ($1::text, $2::text, $3::timestamptz)|]
-              deleteUrl = HS.statement (T.pack link)
+              deleteUrl = HS.statement link
                             [TH.resultlessStatement|DELETE FROM urls WHERE short_url = $1::text|]
           void $ liftIO $ HS.run insertUrl pc
-          res <- checkURL $ T.pack link
+          res <- checkURL link
           void $ liftIO $ HS.run deleteUrl pc
           return res
         r `shouldBe` Right True
 
     it "link is not in the database" $ \as -> do
       forAll genLink $ \link -> do
-        r <- runMain' as $ checkURL $ T.pack link
+        r <- runMain' as $ checkURL link
         r `shouldBe` Right False

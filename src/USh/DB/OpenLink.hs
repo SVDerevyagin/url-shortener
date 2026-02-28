@@ -13,6 +13,7 @@ import Control.Monad.State (gets, liftIO)
 import qualified Data.ByteString.Char8 as BS
 import Data.Time
 import qualified Data.Text as T
+import           Data.Text (Text)
 
 import qualified Hasql.Session  as HS
 import qualified Hasql.TH       as TH
@@ -28,10 +29,10 @@ import USh.DB.Cleanup
 --           returns the found original link
 --
 -- otherwise, checks Postgres
-openShortURL :: String            -- ^ short URL
-             -> MainError String  -- ^ original URL
+openShortURL :: Text              -- ^ short URL
+             -> MainError Text    -- ^ original URL
 openShortURL sURL = do
-  let rkey = BS.pack $ "short:" ++ sURL
+  let rkey = BS.pack $ T.unpack $ "short:" <> sURL
   rc <- gets asRedisConnect
   eDate <- liftIO $ R.runRedis rc $ R.hget rkey "expiration_date"
   now <- liftIO getCurrentTime
@@ -47,9 +48,9 @@ openShortURL sURL = do
       Nothing   -> openShortURL' sURL
       Just link -> do
         pc <- gets asPostgresConnect
-        let updateUrls = HS.statement (T.pack sURL) [TH.resultlessStatement| UPDATE urls SET click_count = click_count + 1 WHERE short_url = $1::text |]
+        let updateUrls = HS.statement sURL [TH.resultlessStatement| UPDATE urls SET click_count = click_count + 1 WHERE short_url = $1::text |]
         void $ liftIO $ HS.run updateUrls pc
-        return $ BS.unpack link
+        return $ T.pack $ BS.unpack link
 
 -- | checks if the short URL is in Postgres
 --
@@ -58,11 +59,11 @@ openShortURL sURL = do
 --           returns the found original link
 --
 -- otherwise return USh404 error
-openShortURL' :: String            -- ^ short URL
-              -> MainError String  -- ^ original URL
+openShortURL' :: Text              -- ^ short URL
+              -> MainError Text    -- ^ original URL
 openShortURL' sURL = do
   pc <- gets asPostgresConnect
-  let selectUrl = HS.statement (T.pack sURL) [TH.maybeStatement|SELECT expiration_date::timestamptz, original_url::text FROM urls WHERE short_url = $1::text|]
+  let selectUrl = HS.statement sURL [TH.maybeStatement|SELECT expiration_date::timestamptz, original_url::text FROM urls WHERE short_url = $1::text|]
   result <- liftIO $ HS.run selectUrl pc
   case result of
     Left err      -> throwError $ UShError UShUnreachable $ "openShortURL: " ++ show err
@@ -74,6 +75,6 @@ openShortURL' sURL = do
         removeShortURL sURL
         throwError $ UShError USh404 "openShortURL: the short URL is not in the database"
       else do
-        let updateUrl = HS.statement (T.pack sURL) [TH.resultlessStatement|UPDATE urls SET click_count = click_count + 1 WHERE short_url = $1::text|]
+        let updateUrl = HS.statement sURL [TH.resultlessStatement|UPDATE urls SET click_count = click_count + 1 WHERE short_url = $1::text|]
         void $ liftIO $ HS.run updateUrl pc
-        return $ T.unpack oURL
+        return oURL
